@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 
 import ops.charm
 import ops.framework
+from ops.model import WaitingStatus, ActiveStatus, UnknownStatus
 
 import ops_sunbeam.interfaces as sunbeam_interfaces
+from ops_sunbeam import compound_status
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,8 @@ class RelationHandler(ops.charm.Object):
         self.relation_name = relation_name
         self.callback_f = callback_f
         self.interface = self.setup_event_handler()
+        self.status = compound_status.Status(relation_name)
+        self.charm.status_pool.add(self.status)
 
     def setup_event_handler(self) -> ops.charm.Object:
         """Configure event handlers for the relation.
@@ -113,6 +117,15 @@ class IngressHandler(RelationHandler):
         self.default_ingress_port = default_ingress_port
         self.service_name = service_name
         super().__init__(charm, relation_name, callback_f)
+        # XXX: if this is mandatory for a charm let's say,
+        # and we add a `mandatory=True` or similar to __init__ here,
+        # ... then how do we set the initial status?
+        # it seems simple, but we can't add it here,
+        # because then we lose the status that was set
+        # in the previous hook execution.
+        # Maybe something like this, although this feels hacky:
+        if isinstance(self.status.status, UnknownStatus):
+            self.status.set(WaitingStatus("ingress relation required"))
 
     def setup_event_handler(self) -> ops.charm.Object:
         """Configure event handlers for an Ingress relation."""
@@ -131,16 +144,33 @@ class IngressHandler(RelationHandler):
         )
         self.framework.observe(ingress_relation_event,
                                self._on_ingress_changed)
+        self.framework.observe(
+            getattr(self.charm.on, f"{_rname}_relation_departed"),
+            self._on_ingress_removed
+        )
+        self.framework.observe(
+            getattr(self.charm.on, f"{_rname}_relation_broken"),
+            self._on_ingress_removed
+        )
         return interface
+
+    def _on_ingress_removed(self, event: ops.framework.EventBase) -> None:
+        self.status.set(WaitingStatus("ingress relation lost"))
 
     def _on_ingress_changed(self, event: ops.framework.EventBase) -> None:
         """Handle ingress relation changed events."""
+        # XXX: can we avoid @property decorated methods?
+        # It's confusing in cases like this where the value is computed,
+        # but it looks like it's static.
         url = self.url
         logger.debug(f'Received url: {url}')
         if not url:
+            # NOTE: unsure if waiting or blocked
+            self.status.set(WaitingStatus("no ingress url"))
             return
 
         self.callback_f(event)
+        self.status.set(ActiveStatus(""))
 
     @property
     def ready(self) -> bool:
@@ -211,10 +241,12 @@ class DBHandler(RelationHandler):
         logger.info(f"Received databases: {databases}")
 
         if not databases:
+            self.status.set(WaitingStatus("no db credentials yet"))
             return
         credentials = self.interface.credentials()
         # XXX Lets not log the credentials
         logger.info(f"Received credentials: {credentials}")
+        self.status.set(ActiveStatus(""))
         self.callback_f(event)
 
     @property
@@ -291,6 +323,7 @@ class AMQPHandler(RelationHandler):
             self.charm, self.relation_name, self.username, self.vhost
         )
         self.framework.observe(amqp.on.ready, self._on_amqp_ready)
+        # TODO: observe other events, so we can set status accordingly
         return amqp
 
     def _on_amqp_ready(self, event: ops.framework.EventBase) -> None:
@@ -298,6 +331,7 @@ class AMQPHandler(RelationHandler):
         # Ready is only emitted when the interface considers
         # that the relation is complete (indicated by a password)
         self.callback_f(event)
+        self.status.set(ActiveStatus(""))
 
     @property
     def ready(self) -> bool:
@@ -363,6 +397,7 @@ class IdentityServiceRequiresHandler(RelationHandler):
         self.framework.observe(
             id_svc.on.ready, self._on_identity_service_ready
         )
+        # TODO: observe other events, so we can set status accordingly
         return id_svc
 
     def _on_identity_service_ready(
@@ -372,6 +407,7 @@ class IdentityServiceRequiresHandler(RelationHandler):
         # Ready is only emitted when the interface considers
         # that the relation is complete (indicated by a password)
         self.callback_f(event)
+        self.status.set(ActiveStatus(""))
 
     def update_service_endpoints(self, service_endpoints: dict) -> None:
         """Update service endpoints on the relation."""
@@ -503,6 +539,7 @@ class CephClientHandler(RelationHandler):
         # Ready is only emitted when the interface considers
         # that the relation is complete
         self.callback_f(event)
+        self.status.set(ActiveStatus(""))
 
     def request_pools(self, event: ops.framework.EventBase) -> None:
         """

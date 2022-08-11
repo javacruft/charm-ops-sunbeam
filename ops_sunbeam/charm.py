@@ -41,6 +41,7 @@ import ops.pebble
 from lightkube import Client
 from lightkube.resources.core_v1 import Service
 
+import ops_sunbeam.compound_status as compound_status
 import ops_sunbeam.config_contexts as sunbeam_config_contexts
 import ops_sunbeam.container_handlers as sunbeam_chandlers
 import ops_sunbeam.core as sunbeam_core
@@ -59,6 +60,10 @@ class OSBaseOperatorCharm(ops.charm.CharmBase):
     def __init__(self, framework: ops.framework.Framework) -> None:
         """Run constructor."""
         super().__init__(framework)
+
+        self.status = compound_status.Status("workload", priority=100)
+        self.status_pool = compound_status.StatusPool(self)
+        self.status_pool.add(self.status)
         self._state.set_default(bootstrapped=False)
         self.relation_handlers = self.get_relation_handlers()
         self.pebble_handlers = self.get_pebble_handlers()
