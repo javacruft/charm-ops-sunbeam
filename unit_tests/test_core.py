@@ -14,7 +14,6 @@
 
 """Test aso."""
 
-import json
 import mock
 import sys
 
@@ -148,7 +147,7 @@ class TestOSBaseOperatorAPICharm(test_utils.CharmTestCase):
         rel_data = self.harness.get_relation_data(
             db_rel_id,
             'my-service')
-        requested_db = json.loads(rel_data['databases'])[0]
+        requested_db = rel_data['database']
         self.assertEqual(requested_db, 'my_service')
 
     def test_contexts(self) -> None:
@@ -166,7 +165,7 @@ class TestOSBaseOperatorAPICharm(test_utils.CharmTestCase):
             contexts.wsgi_config.wsgi_admin_script,
             '/bin/wsgi_admin')
         self.assertEqual(
-            contexts.shared_db.database_password,
+            contexts.database.database_password,
             'hardpassword')
         self.assertEqual(
             contexts.options.debug,
