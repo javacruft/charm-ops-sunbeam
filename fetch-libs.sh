@@ -12,5 +12,6 @@ charmcraft fetch-lib charms.rabbitmq_k8s.v0.rabbitmq
 charmcraft fetch-lib charms.ovn_central_k8s.v0.ovsdb
 charmcraft fetch-lib charms.observability_libs.v0.kubernetes_service_patch
 charmcraft fetch-lib charms.traefik_k8s.v1.ingress
+charmcraft fetch-lib charms.tls_certificates_interface.v1.tls_certificates
 echo "Copying libs to to unit_test dir"
 rsync --recursive --delete lib/ unit_tests/lib/

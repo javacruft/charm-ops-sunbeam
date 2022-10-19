@@ -680,71 +680,129 @@ class CertificatesHandler(RelationHandler):
         """Run constructor."""
         # Lazy import to ensure this lib is only required if the charm
         # has this relation.
-        import interface_tls_certificates.ca_client as ca_client
-        self.ca_client = ca_client
+        from charms.tls_certificates_interface.v1 import tls_certificates
+        self.tls_certificates = tls_certificates
         self.sans = sans
         super().__init__(charm, relation_name, callback_f, mandatory)
 
     def setup_event_handler(self) -> None:
         """Configure event handlers for peer relation."""
         logger.debug("Setting up certificates event handler")
-        certs = self.ca_client.CAClient(
+        certs = self.tls_certificates.TLSCertificatesRequiresV1(
             self.charm,
             self.relation_name,
         )
         self.framework.observe(
-            certs.on.ca_available,
-            self._request_certs)
+            self.charm.on.install,
+            self._on_install
+        )
         self.framework.observe(
-            certs.on.tls_server_config_ready,
-            self._certs_ready)
+            self.charm.on.certificates_relation_joined,
+            self._request_certs
+        )
+        self.framework.observe(
+            certs.on.certificate_available,
+            self._certs_ready
+        )
+        self.framework.observe(
+            certs.on.certificate_expiring,
+            self._certs_expiring
+        )
         return certs
+
+    @property
+    def peers(self) -> ops.framework.RelationBase:
+        """Retrieve peer relation for charm."""
+        self.charm.model.get_relation("peers")
+
+    def _on_install(self, event) -> None:
+        """Perform one off installation tasks for TLS certs."""
+        if not self.charm.unit.is_leader():
+            return
+        # Need peer relation before TLS certs
+        # can be setup
+        if not self.peers:
+            event.defer()
+            return
+
+        private_key = self.tls_certificates.generate_private_key()
+        self.peers.data[self.charm.app].update({
+            "private_key": private_key.decode(),
+        })
 
     def _request_certs(self, event: ops.framework.EventBase) -> None:
         """Request Certificates."""
-        logger.debug(f"Requesting cert for {self.sans}")
-        self.interface.request_server_certificate(
-            self.model.unit.name.replace('/', '-'),
-            self.sans)
-        self.callback_f(event)
+        if not self.charm.unit.is_leader():
+            return        
+        if not self.peers:
+            event.defer()
+            return
 
+        logger.debug(f"Requesting cert for {self.sans}")
+
+        private_key = self.peers.data[self.charm.app].get(
+            "private_key")
+
+        csr = self.tls_certificates.generate_csr(
+            private_key=private_key.encode(),
+            subject=self.charm.app.name.replace('/', '-'),
+            sans=self.sans
+        )
+        self.peers[self.charm.app].update({
+            "csr": csr.decode()
+        })
+        self.interface.request_certificate(
+            certificate_signing_request=csr
+        )
+        
     def _certs_ready(self, event: ops.framework.EventBase) -> None:
-        """Request Certificates."""
+        """Certs ready for use."""
+        if not self.charm.unit.is_leader():
+            return        
+        if not self.peers:
+            event.defer()
+            return
+
+        self.peers.data[self.charm.app].update({
+            "certificate": event.certificate,
+            "ca": event.ca,
+            "chain": event.chain
+        })
+
         self.callback_f(event)
 
     @property
     def ready(self) -> bool:
-        """Whether handler ready for use."""
-        return self.interface.is_server_cert_ready
+        """Determine if handler is ready for use."""
+        if self.peers:
+            _required_keys = (
+                "private_key",
+                "certificate",
+                "ca",
+                "chain",
+            )
+            return all([
+                self.peers.data[self.charm.app].get(k)
+                for k in _required_keys
+            ])
+        return False
 
     def context(self) -> dict:
         """Certificates context."""
-        key = self.interface.server_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption())
-        cert = self.interface.server_certificate.public_bytes(
-            encoding=serialization.Encoding.PEM)
-        try:
-            root_ca_chain = self.interface.root_ca_chain.public_bytes(
-                encoding=serialization.Encoding.PEM
-            )
-        except self.ca_client.CAClientError:
-            # A root ca chain is not always available. If configured to just
-            # use vault with self-signed certificates, you will not get a ca
-            # chain. Instead, you will get a CAClientError being raised. For
-            # now, use a bytes() object for the root_ca_chain as it shouldn't
-            # cause problems and if a ca_cert_chain comes later, then it will
-            # get updated.
-            root_ca_chain = bytes()
-        ca_cert = (
-            self.interface.ca_certificate.public_bytes(
-                encoding=serialization.Encoding.PEM) +
-            root_ca_chain)
+        if not self.peers:
+            return {}
+
+        app_data = self.peers.data[self.charm.app]
+        key = app_data.get("private_key")
+        cert = app_data.get("certificate")
+        ca = app_data.get("ca")
+        ca_chain = app_data.get("chain")
+        if ca:
+            ca_chain = ca_chain + ca
         ctxt = {
-            'key': key.decode(),
-            'cert': cert.decode(),
-            'ca_cert': ca_cert.decode()}
+            'key': key,
+            'cert': cert,
+            'ca_cert': ca_chain}
         return ctxt
 
 

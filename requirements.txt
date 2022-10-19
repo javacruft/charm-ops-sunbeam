@@ -2,6 +2,7 @@ charmhelpers
 jinja2
 jsonschema
 kubernetes
+cryptography
 ops
 python-keystoneclient
 git+https://github.com/openstack/charm-ops-interface-ceph-client#egg=interface_ceph_client
